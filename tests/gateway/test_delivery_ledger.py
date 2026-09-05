@@ -183,6 +183,32 @@ class TestRuntimeFailedSweep:
         assert _row("ob-1")["state"] == "failed"
         assert _row("ob-1")["attempts"] == 0
 
+    def test_claims_flood_control_row_despite_server_wait_suffix(self):
+        """``flood_control:{wait}`` is transient with a server-stated wait, so it must be replayable.
+
+        The adapter fails closed past its inline sleep cap precisely so this ledger owns the wait;
+        an exact-match allowlist never matches the ``:{seconds}`` suffix, which stranded the reply
+        until the next restart and abandoned it after ``STALE_AFTER_SECONDS``.
+        """
+        _record(platform="telegram")
+        dl.mark_failed("ob-1", "flood_control:171.0")
+
+        claimed = dl.sweep_failed_for_runtime("telegram")
+
+        assert len(claimed) == 1
+        assert claimed[0]["needs_marker"] is True
+        assert claimed[0]["attempts"] == 1
+        assert _row("ob-1")["state"] == "attempting"
+
+    def test_error_merely_prefixed_like_flood_control_is_not_claimed(self):
+        """The prefix is delimiter-anchored: only ``flood_control:`` replays, not a lookalike."""
+        _record(platform="telegram")
+        dl.mark_failed("ob-1", "flood_controlled_shutdown")
+
+        assert dl.sweep_failed_for_runtime("telegram") == []
+        assert _row("ob-1")["state"] == "failed"
+        assert _row("ob-1")["attempts"] == 0
+
     def test_claim_is_platform_scoped_and_not_reclaimed_while_attempting(self):
         _record(platform="telegram")
         dl.mark_failed("ob-1", "send_path_degraded")

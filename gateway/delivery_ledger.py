@@ -43,6 +43,17 @@ RECONNECTED_MARKER = ("♻️ Recovered reply — the messaging platform reconne
 # Runtime replay is fail-closed: only errors whose send contract proves they are transient reconnect
 # failures. Permanent rejects (blocked bot, bad auth, missing chat) must not be retried on reconnect.
 _RUNTIME_RETRYABLE_ERRORS = frozenset({"send_path_degraded"})
+# Same contract, but the error carries a server-supplied wait: ``flood_control:{seconds}``. The
+# platform adapter fails closed once that wait exceeds its inline sleep cap and hands ownership of
+# the wait to this ledger, so the prefix has to be replayable here or the reply is stranded until the
+# next gateway restart -- and abandoned outright after ``STALE_AFTER_SECONDS``.
+_RUNTIME_RETRYABLE_ERROR_PREFIXES = ("flood_control:",)
+
+
+def _runtime_retryable(last_error: Any) -> bool:
+    """True when a failed row's error is a transient send failure this process may replay."""
+    error = str(last_error or "").strip().lower()
+    return error in _RUNTIME_RETRYABLE_ERRORS or error.startswith(_RUNTIME_RETRYABLE_ERROR_PREFIXES)
 
 
 def _db_path():
@@ -299,7 +310,7 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
              owner_pid, owner_started_at, last_error, adapter_profile) in rows:
             # Exact process-start matching prevents PID reuse from stealing work.
             if (adapter_profile != expected_profile or owner_pid != pid or owner_started_at != started
-                    or str(last_error or "").strip().lower() not in _RUNTIME_RETRYABLE_ERRORS):
+                    or not _runtime_retryable(last_error)):
                 continue
             owner_guard = (now, oid, owner_pid, owner_started_at)
             if attempts >= MAX_ATTEMPTS or (now - created_at) > STALE_AFTER_SECONDS:  # exhausted -> abandoned
